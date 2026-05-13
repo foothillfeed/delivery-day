@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Foothill Feed — Delivery Day</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #faf8f4; font-family: system-ui, sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+const { useState, useRef, useEffect, useCallback } = React;
+
+const GREEN = "#2D5233";
+const AMBER = "#d4853a";
+const RED = "#c0392b";
+const BLUE = "#2c5f8a";
+const PURPLE = "#6b4c9a";
+
+// Vendor config — add new vendors here
+const VENDORS = {
+  "Newco":    { repEmail: "nate.burger@newcodistributors.com", deadlineDay: "Wednesday",       color: GREEN },
+  "VSI":      { repEmail: "orders@vsi.cc",                    deadlineDay: "Tuesday by 2pm",  color: "#7b3f9e" },
+  "Phillips": { repEmail: "orders@phillipspet.com",           deadlineDay: "Thursday by 10am", color: "#c45c1a" },
+  "Other":    { repEmail: "",                                 deadlineDay: null,               color: BLUE },
+};
+
+// Detect vendor from invoice content
+function detectVendor(raw) {
+  const u = raw.toUpperCase();
+  if (u.includes("NEWCO") || u.includes("RANCHO CUCAMONGA")) return "Newco";
+  if (u.includes("VETERINARY SERVICE") || u.includes("VSI") || u.includes("PALMYRITA")) return "VSI";
+  if (u.includes("PHILLIPS PET") || u.includes("HECKTOWN") || u.includes("EASTON, PA")) return "Phillips";
+  return "Other";
+}
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
