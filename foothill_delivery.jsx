@@ -350,7 +350,10 @@ function InvoiceQueueCard({ inv, isActive, onSelect, onRemove }) {
           <span style={{fontWeight:700,fontSize:14,color:inv.status==="parsing"?"#aaa":"#1a1a1a"}}>
             {inv.status==="parsing" ? inv.filename : (inv.parsed?.distributor||inv.vendor||"Unknown")}
           </span>
-          {inv.parsed?.invoice_number&&<span style={{fontFamily:"monospace",fontSize:11,color:"#aaa"}}>#{inv.parsed.invoice_number}</span>}
+          {inv.parsed?.invoice_numbers?.length>1
+            ?<span style={{fontFamily:"monospace",fontSize:11,color:"#aaa"}}>#{inv.parsed.invoice_numbers.join(", #")}</span>
+            :inv.parsed?.invoice_number00260026<span style={{fontFamily:"monospace",fontSize:11,color:"#aaa"}}>#{inv.parsed.invoice_number}</span>}
+          {inv.parsed?._merged00260026<span style={{fontSize:10,background:"#edf3f9",color:"#2c5f8a",padding:"2px 7px",borderRadius:10,fontWeight:700}}>{inv.parsed._sourceCount} invoices merged</span>}
           <span style={{background:st.bg,color:st.color,fontSize:10,fontWeight:700,padding:"2px 8px",borderRadius:20,display:"flex",alignItems:"center",gap:4}}>
             {inv.status==="parsing"&&<span style={{display:"inline-block",width:8,height:8,border:"1.5px solid #bbb",borderTopColor:"#888",borderRadius:"50%",animation:"spin 0.7s linear infinite"}}/>}
             {inv.status!=="parsing"&&st.icon} {st.label}
@@ -532,6 +535,116 @@ export default function App() {
     while(objs>0){s+="}";objs--;}while(opens>0){s+="]";opens--;}return s;
   };
 
+  // ── Merge same-vendor same-date invoices into one check-in ────────────────
+  // Called after all PDFs in a batch finish parsing.
+  // Returns the new queue with duplicates collapsed.
+  const mergeInvoiceQueue = (queue) => {
+    // Group "ready" invoices by vendor+date. Parsing/error/credit/active/done are untouched.
+    const mergeable = queue.filter(i => i.status === "ready" && i.parsed);
+    const immutable = queue.filter(i => i.status !== "ready" || !i.parsed);
+
+    // Build groups keyed by "vendor|ship_date"
+    const groups = {};
+    mergeable.forEach(inv => {
+      const key = `${inv.parsed.distributor}|${inv.parsed.ship_date}`;
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(inv);
+    });
+
+    const merged = [];
+    Object.values(groups).forEach(group => {
+      if (group.length === 1) { merged.push(group[0]); return; }
+
+      // Merge all invoices in the group into the first one
+      const base = group[0];
+      const allInvoiceNums = group.map(inv => inv.parsed.invoice_number).filter(Boolean);
+
+      // Combine items: match by UPC, sum quantities & extended; append unique UPCs
+      let combinedItems = [...(base.parsed.items || [])];
+      let autoFlags = {...(base.flags || {})};
+
+      group.slice(1).forEach(inv => {
+        (inv.parsed.items || []).forEach(newItem => {
+          const existIdx = combinedItems.findIndex(ci =>
+            ci.upc && newItem.upc && ci.upc === newItem.upc
+          );
+          if (existIdx >= 0) {
+            // Same UPC — combine quantities
+            const existing = combinedItems[existIdx];
+            combinedItems[existIdx] = {
+              ...existing,
+              ship_qty: String((parseInt(existing.ship_qty)||0) + (parseInt(newItem.ship_qty)||0)),
+              ord_qty:  String((parseInt(existing.ord_qty)||0)  + (parseInt(newItem.ord_qty)||0)),
+              extended: String(((parseFloat(existing.extended)||0) + (parseFloat(newItem.extended)||0)).toFixed(2)),
+              // tag which invoice numbers this item came from (for email breakdown)
+              _invoices: [...(existing._invoices || [existing._fromInvoice || base.parsed.invoice_number]), newItem.invoice_number || inv.parsed.invoice_number].filter(Boolean),
+            };
+            // Re-evaluate short flag after combining
+            const combined = combinedItems[existIdx];
+            if (parseInt(combined.ord_qty) > parseInt(combined.ship_qty)) {
+              autoFlags[existIdx] = "short";
+            } else {
+              if (autoFlags[existIdx] === "short") delete autoFlags[existIdx];
+            }
+          } else {
+            // New UPC — append, tag with source invoice
+            const newIdx = combinedItems.length;
+            combinedItems.push({
+              ...newItem,
+              _invoices: [newItem.invoice_number || inv.parsed.invoice_number].filter(Boolean),
+            });
+            if (parseInt(newItem.ord_qty) > parseInt(newItem.ship_qty)) autoFlags[newIdx] = "short";
+          }
+        });
+      });
+
+      // Tag base items with their source invoice too
+      combinedItems = combinedItems.map((item, i) => ({
+        ...item,
+        _invoices: item._invoices || [base.parsed.invoice_number].filter(Boolean),
+      }));
+
+      // Pool cancelled items
+      const allCancelled = group.flatMap(inv => inv.parsed.cancelled_items || []);
+
+      // Combine invoice totals
+      const combinedTotal = group.reduce((sum, inv) => sum + (parseFloat(inv.parsed.invoice_total)||0), 0).toFixed(2);
+
+      // Merge price changes — dedup by UPC, keep largest change
+      const pcMap = {};
+      group.forEach(inv => {
+        (inv.parsed.priceChanges || []).forEach(pc => {
+          if (!pcMap[pc.upc] || parseFloat(pc.change) > parseFloat(pcMap[pc.upc].change)) {
+            pcMap[pc.upc] = pc;
+          }
+        });
+      });
+
+      const mergedEntry = {
+        ...base,
+        parsed: {
+          ...base.parsed,
+          invoice_number: allInvoiceNums[0],       // kept for legacy compat
+          invoice_numbers: allInvoiceNums,          // NEW: full list
+          invoice_total: combinedTotal,
+          items: combinedItems,
+          cancelled_items: allCancelled,
+          priceChanges: Object.values(pcMap),
+          _merged: true,
+          _sourceCount: group.length,
+        },
+        flags: autoFlags,
+      };
+
+      merged.push(mergedEntry);
+    });
+
+    // Preserve original order: put merged entries where the first of the group was
+    const finalQueue = [...immutable, ...merged];
+    // Re-sort by original insertion order (immutable items first is fine; merged replaces group[0])
+    return finalQueue;
+  };
+
   const parseOneInvoice = async (invoiceId, b64, pricesSnapshot) => {
     try {
       const res = await fetch("https://api.anthropic.com/v1/messages",{
@@ -602,6 +715,9 @@ export default function App() {
     if(Object.keys(allPriceUpdates).length>0) {
       setLastPrices(prev=>{ const updated={...prev,...allPriceUpdates}; localStorage.setItem("ff_last_prices",JSON.stringify(updated)); return updated; });
     }
+
+    // Auto-merge same-vendor same-date invoices into one check-in
+    setInvoiceQueue(prev => mergeInvoiceQueue(prev));
   };
 
   const selectInvoice = (id) => {
@@ -639,21 +755,44 @@ export default function App() {
     const cancelled=manifest?.cancelled_items||[];
     const priceChanges=manifest?.priceChanges||[];
     const today=new Date().toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"});
+    const isMerged = manifest?.invoice_numbers?.length > 1;
+    const invoiceNums = manifest?.invoice_numbers || [manifest?.invoice_number];
+    const invoiceLabel = isMerged ? `Invoices #${invoiceNums.join(", #")}` : `Invoice #${invoiceNums[0]}`;
+
     const short=flaggedItems.filter(x=>x.flag==="short");
     const damaged=flaggedItems.filter(x=>x.flag==="damaged");
     const wrong=flaggedItems.filter(x=>x.flag==="wrong");
-    let vendorEmail=`Hi,\n\nPlease see the following exceptions from our delivery today (${today}), Invoice #${manifest?.invoice_number}:\n\n`;
-    if(short.length){vendorEmail+=`SHORT SHIPPED:\n`;short.forEach(x=>{const act=receivedQty[x.i]!==undefined?receivedQty[x.i]:parseInt(x.item.ship_qty);vendorEmail+=`  • ${x.item.description} — invoice says ${x.item.ship_qty}, received ${act}\n`;});vendorEmail+="\n";}
-    if(damaged.length){vendorEmail+=`DAMAGED ON ARRIVAL:\n`;damaged.forEach(x=>{const p=damagePhotos[x.i]||[];vendorEmail+=`  • ${x.item.description} — ${x.dmgCount} of ${x.item.ship_qty} bag${parseInt(x.item.ship_qty)!==1?"s":""} damaged${p.length>0?` (${p.length} photo${p.length>1?"s":""} attached)`:""}\n`;});vendorEmail+="\n";}
-    if(wrong.length){vendorEmail+=`WRONG ITEM RECEIVED:\n`;wrong.forEach(x=>{vendorEmail+=`  • ${x.item.description}\n`;});vendorEmail+="\n";}
-    if(short.length||damaged.length||wrong.length) vendorEmail+=`Please advise on credit or replacement.\n\nThank you,\nFoothill Feed\n3293 Taylor Rd, Loomis CA 95650\n(916) 652-7121\norders@foothillfeedloomis.com`;
+    const hasIssues = short.length||damaged.length||wrong.length;
+
+    let vendorEmail=`Hi,\n\nPlease see the following exceptions from our delivery today (${today}), ${invoiceLabel}:\n\n`;
+
+    if (isMerged && hasIssues) {
+      // Group flagged items by source invoice number, emit one section per invoice
+      invoiceNums.forEach(invNum => {
+        const invShort  = short.filter(x  => (x.item._invoices||[invoiceNums[0]]).includes(invNum));
+        const invDamaged= damaged.filter(x => (x.item._invoices||[invoiceNums[0]]).includes(invNum));
+        const invWrong  = wrong.filter(x  => (x.item._invoices||[invoiceNums[0]]).includes(invNum));
+        if (!invShort.length && !invDamaged.length && !invWrong.length) return;
+        vendorEmail += `--- Invoice #${invNum} ---\n`;
+        if(invShort.length){vendorEmail+=`SHORT SHIPPED:\n`;invShort.forEach(x=>{const act=receivedQty[x.i]!==undefined?receivedQty[x.i]:parseInt(x.item.ship_qty);vendorEmail+=`  • ${x.item.description} — invoice says ${x.item.ship_qty}, received ${act}\n`;});vendorEmail+="\n";}
+        if(invDamaged.length){vendorEmail+=`DAMAGED ON ARRIVAL:\n`;invDamaged.forEach(x=>{const p=damagePhotos[x.i]||[];vendorEmail+=`  • ${x.item.description} — ${x.dmgCount} of ${x.item.ship_qty} bag${parseInt(x.item.ship_qty)!==1?"s":""} damaged${p.length>0?` (${p.length} photo${p.length>1?"s":""} attached)`:""}\n`;});vendorEmail+="\n";}
+        if(invWrong.length){vendorEmail+=`WRONG ITEM RECEIVED:\n`;invWrong.forEach(x=>{vendorEmail+=`  • ${x.item.description}\n`;});vendorEmail+="\n";}
+      });
+    } else {
+      // Single invoice — flat format
+      if(short.length){vendorEmail+=`SHORT SHIPPED:\n`;short.forEach(x=>{const act=receivedQty[x.i]!==undefined?receivedQty[x.i]:parseInt(x.item.ship_qty);vendorEmail+=`  • ${x.item.description} — invoice says ${x.item.ship_qty}, received ${act}\n`;});vendorEmail+="\n";}
+      if(damaged.length){vendorEmail+=`DAMAGED ON ARRIVAL:\n`;damaged.forEach(x=>{const p=damagePhotos[x.i]||[];vendorEmail+=`  • ${x.item.description} — ${x.dmgCount} of ${x.item.ship_qty} bag${parseInt(x.item.ship_qty)!==1?"s":""} damaged${p.length>0?` (${p.length} photo${p.length>1?"s":""} attached)`:""}\n`;});vendorEmail+="\n";}
+      if(wrong.length){vendorEmail+=`WRONG ITEM RECEIVED:\n`;wrong.forEach(x=>{vendorEmail+=`  • ${x.item.description}\n`;});vendorEmail+="\n";}
+    }
+    if(hasIssues) vendorEmail+=`Please advise on credit or replacement.\n\nThank you,\nFoothill Feed\n3293 Taylor Rd, Loomis CA 95650\n(916) 652-7121\norders@foothillfeedloomis.com`;
+
     let priceEmail="";
     if(priceChanges.length>0){
-      priceEmail=`Hi Jeff,\n\nThe following items had price increases on today's delivery (${today}), Invoice #${manifest?.invoice_number}. Please update retail pricing before these items go on the shelf:\n\n`;
+      priceEmail=`Hi Jeff,\n\nThe following items had price increases on today's delivery (${today}), ${invoiceLabel}. Please update retail pricing before these items go on the shelf:\n\n`;
       priceChanges.forEach(pc=>{priceEmail+=`  • ${pc.description}\n    Previous cost: $${pc.previous} → New cost: $${pc.current} (+$${pc.change} / +${pc.pct}%)\n\n`;});
       priceEmail+=`Please review and update shelf prices accordingly.\n\nFoothill Feed Delivery System`;
     }
-    const reportData={items,flaggedItems,specialItems,shelfItems,cancelled,priceChanges,vendorEmail,priceEmail,today};
+    const reportData={items,flaggedItems,specialItems,shelfItems,cancelled,priceChanges,vendorEmail,priceEmail,today,invoiceLabel,isMerged,invoiceNums};
     updateInvoice(activeInvoiceId,()=>({report:reportData,status:"done"}));
     setTab("report");
   };
@@ -838,7 +977,7 @@ export default function App() {
             )}
 
             <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:14}}>
-              {[["Invoice #",manifest.invoice_number],["Ship Date",manifest.ship_date],["Items",manifest.items?.length],["Invoice Total","$"+manifest.invoice_total]].map(([label,val])=>(
+              {[["Invoice #",manifest.invoice_numbers?.length>1?manifest.invoice_numbers.join(", #"):manifest.invoice_number],["Ship Date",manifest.ship_date],["Items",manifest.items?.length],["Invoice Total","$"+manifest.invoice_total]].map(([label,val])=>(
                 <div key={label} style={{background:"#eef4ef",border:"1px solid #c2d9c5",borderRadius:8,padding:"10px 14px"}}>
                   <div style={{fontSize:10,color:"#888",textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:3}}>{label}</div>
                   <div style={{fontSize:15,fontWeight:700,color:GREEN,fontFamily:"monospace"}}>{val}</div>
@@ -885,7 +1024,7 @@ export default function App() {
             <div style={card}>
               <div style={cardH}>
                 <span style={{fontSize:16,fontWeight:700,color:VENDOR_COLORS[manifest.distributor]||GREEN}}>
-                  {manifest.distributor} — Invoice #{manifest.invoice_number}
+                  {manifest.distributor} — {manifest.invoice_numbers?.length>1 ? `Invoices #${manifest.invoice_numbers.join(", #")}` : `Invoice #${manifest.invoice_number}`}
                 </span>
                 <div style={{display:"flex",gap:8}}>
                   <button style={btn("white",GREEN,`1px solid ${GREEN}`)} onClick={()=>updateInvoice(activeInvoiceId,()=>({flags:{},receivedQty:{},checkedIn:{},damagedQty:{},damagePhotos:{}}))}>Reset</button>
@@ -1029,7 +1168,7 @@ export default function App() {
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18}}>
               <div>
                 <div style={{fontSize:22,fontWeight:800,color:GREEN}}>Delivery Report</div>
-                <div style={{fontSize:12,color:"#888"}}>Invoice {manifest?.invoice_number} · {manifest?.distributor} · {manifest?.ship_date} · {activeReport.today}</div>
+                <div style={{fontSize:12,color:"#888"}}>{activeReport.invoiceLabel||`Invoice #${manifest?.invoice_number}`} · {manifest?.distributor} · {manifest?.ship_date} · {activeReport.today}</div>
               </div>
               <button style={btn("white",GREEN,`1px solid ${GREEN}`)} onClick={()=>window.print()}>🖨 Print</button>
             </div>
