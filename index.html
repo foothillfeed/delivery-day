@@ -366,8 +366,8 @@ function InvoiceQueueCard({ inv, isActive, onSelect, onRemove }) {
           </span>
           {inv.parsed?.invoice_numbers?.length>1
             ?<span style={{fontFamily:"monospace",fontSize:11,color:"#aaa"}}>#{inv.parsed.invoice_numbers.join(", #")}</span>
-            :inv.parsed?.invoice_number00260026<span style={{fontFamily:"monospace",fontSize:11,color:"#aaa"}}>#{inv.parsed.invoice_number}</span>}
-          {inv.parsed?._merged00260026<span style={{fontSize:10,background:"#edf3f9",color:"#2c5f8a",padding:"2px 7px",borderRadius:10,fontWeight:700}}>{inv.parsed._sourceCount} invoices merged</span>}
+            :inv.parsed?.invoice_number&&<span style={{fontFamily:"monospace",fontSize:11,color:"#aaa"}}>#{inv.parsed.invoice_number}</span>}
+          {inv.parsed?._merged&&<span style={{fontSize:10,background:"#edf3f9",color:"#2c5f8a",padding:"2px 7px",borderRadius:10,fontWeight:700}}>{inv.parsed._sourceCount} invoices merged</span>}
           <span style={{background:st.bg,color:st.color,fontSize:10,fontWeight:700,padding:"2px 8px",borderRadius:20,display:"flex",alignItems:"center",gap:4}}>
             {inv.status==="parsing"&&<span style={{display:"inline-block",width:8,height:8,border:"1.5px solid #bbb",borderTopColor:"#888",borderRadius:"50%",animation:"spin 0.7s linear infinite"}}/>}
             {inv.status!=="parsing"&&st.icon} {st.label}
