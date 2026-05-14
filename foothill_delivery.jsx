@@ -648,7 +648,7 @@ export default function App() {
   const parseOneInvoice = async (invoiceId, b64, pricesSnapshot) => {
     try {
       const res = await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST", headers:{"Content-Type":"application/json","x-api-key":"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","anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+        method:"POST", headers:{"Content-Type":"application/json","x-api-key":"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","anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
         body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:8000,messages:[{role:"user",content:[{type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}},{type:"text",text:PARSE_PROMPT}]}]})
       });
       const data = await res.json();
