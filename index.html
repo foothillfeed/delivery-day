@@ -665,7 +665,7 @@ function App() {
       const _k = ["sk-ant-api03-","2nJsYvCwOOtCUguc4LULbiXesujh-A9XcYB9-btACQAqEzjKd-RqsExlMREXHfGK3SJeWbfVh7eR5Hvx2QCEsg-M2WfwgAA"].join("");
       const res = await fetch("https://api.anthropic.com/v1/messages",{
         method:"POST", headers:{"Content-Type":"application/json","x-api-key":_k,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-        body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:8000,messages:[{role:"user",content:[{type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}},{type:"text",text:PARSE_PROMPT}]}]})
+        body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:16000,messages:[{role:"user",content:[{type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}},{type:"text",text:PARSE_PROMPT}]}]})
       });
       const data = await res.json();
       if(!res.ok) throw new Error(data.error?.message||"API error");
